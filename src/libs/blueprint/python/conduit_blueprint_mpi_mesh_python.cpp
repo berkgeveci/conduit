@@ -585,9 +585,6 @@ CONDUIT_BLUEPRINT_PYTHON_API void initconduit_blueprint_mpi_mesh_python(void)
     }
 
 
-#ifdef Py_LIMITED_API
-    GLOBAL_MODULE = py_module;
-#endif
 
 #if defined(IS_PY3K)
     return py_module;
