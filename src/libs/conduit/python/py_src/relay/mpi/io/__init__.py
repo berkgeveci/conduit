@@ -6,8 +6,8 @@
 # file: __init__.py
 # Purpose: Main init for the conduit relay mpi io module.
 ###############################################################################
-from .conduit_relay_mpi_io_python import *
+from conduit._mpi_abi import import_ext as _import_ext
+
+globals().update(_import_ext(__name__, "conduit_relay_mpi_io_python"))
 
 from . import blueprint
-
-

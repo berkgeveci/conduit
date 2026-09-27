@@ -101,7 +101,9 @@ if(CONDUIT_PYTHON_ENABLED)
 endif()
 
 # and if mpi enabled, a convenience target for remaining mpi deps (conduit::conduit_mpi)
-if(CONDUIT_RELAY_MPI_ENABLED)
+# (the MPI headers can be present while this particular package has no MPI
+# targets, e.g. the serial package of a side-by-side MPI variant install)
+if(CONDUIT_RELAY_MPI_ENABLED AND TARGET conduit_relay_mpi)
     add_library(conduit::conduit_mpi INTERFACE IMPORTED)
     set_property(TARGET conduit::conduit_mpi
                  PROPERTY INTERFACE_LINK_LIBRARIES

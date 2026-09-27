@@ -296,21 +296,40 @@ FUNCTION(PYTHON_ADD_COMPILED_MODULE)
         set(py_install_dir ${PYTHON_MODULE_INSTALL_PREFIX})
     endif()
 
+    # MPI variant installs: the MPI python modules go to a _<variant>
+    # subpackage (conduit/relay/mpi/_mpich/...) so one python package can
+    # carry the modules for several MPI ABIs; conduit/_mpi_abi.py picks one
+    # at import time.
+    set(py_mod_dir "${args_PY_MODULE_DIR}")
+    set(py_mod_is_mpi_variant FALSE)
+    if(CONDUIT_INSTALL_MPI_VARIANT AND "${args_NAME}" MATCHES "_mpi")
+        set(py_mod_dir "${args_PY_MODULE_DIR}/_${CONDUIT_INSTALL_MPI_VARIANT}")
+        set(py_mod_is_mpi_variant TRUE)
+    endif()
+
     # relocatable installs: point the module's RPATH at <prefix>/lib
-    # relative to where the module is installed, so the modules keep
-    # working when the install tree (or the python package) is moved.
+    # (and <prefix>/mpi/<variant>/lib for MPI variant modules) relative to
+    # where the module is installed, so the modules keep working when the
+    # install tree (or the python package) is moved.
     if(ENABLE_RELOCATABLE_INSTALL)
-        set(py_mod_abs_dir "${py_install_dir}/${args_PY_MODULE_DIR}")
+        set(py_mod_abs_dir "${py_install_dir}/${py_mod_dir}")
         if(NOT IS_ABSOLUTE "${py_mod_abs_dir}")
             set(py_mod_abs_dir "${CMAKE_INSTALL_PREFIX}/${py_mod_abs_dir}")
         endif()
-        file(RELATIVE_PATH py_mod_lib_rel
-             "${py_mod_abs_dir}" "${CMAKE_INSTALL_PREFIX}/lib")
-        if(APPLE)
-            set(py_mod_rpath "@loader_path/${py_mod_lib_rel}")
-        else()
-            set(py_mod_rpath "$ORIGIN/${py_mod_lib_rel}")
+        set(py_mod_lib_dirs "${CMAKE_INSTALL_PREFIX}/lib")
+        if(py_mod_is_mpi_variant)
+            list(APPEND py_mod_lib_dirs
+                 "${CMAKE_INSTALL_PREFIX}/${CONDUIT_MPI_VARIANT_LIB_DIR}")
         endif()
+        set(py_mod_rpath)
+        foreach(py_mod_lib_dir IN LISTS py_mod_lib_dirs)
+            file(RELATIVE_PATH py_mod_lib_rel "${py_mod_abs_dir}" "${py_mod_lib_dir}")
+            if(APPLE)
+                list(APPEND py_mod_rpath "@loader_path/${py_mod_lib_rel}")
+            else()
+                list(APPEND py_mod_rpath "$ORIGIN/${py_mod_lib_rel}")
+            endif()
+        endforeach()
         set_target_properties(${args_NAME} PROPERTIES
                               INSTALL_RPATH "${py_mod_rpath}"
                               INSTALL_RPATH_USE_LINK_PATH FALSE)
@@ -329,9 +348,9 @@ FUNCTION(PYTHON_ADD_COMPILED_MODULE)
 
     install(TARGETS ${args_NAME}
             ${py_mod_export}
-            LIBRARY DESTINATION ${py_install_dir}/${args_PY_MODULE_DIR}
-            ARCHIVE DESTINATION ${py_install_dir}/${args_PY_MODULE_DIR}
-            RUNTIME DESTINATION ${py_install_dir}/${args_PY_MODULE_DIR}
+            LIBRARY DESTINATION ${py_install_dir}/${py_mod_dir}
+            ARCHIVE DESTINATION ${py_install_dir}/${py_mod_dir}
+            RUNTIME DESTINATION ${py_install_dir}/${py_mod_dir}
     )
 
 ENDFUNCTION(PYTHON_ADD_COMPILED_MODULE)

@@ -92,12 +92,55 @@ version). This sets `CONDUIT_PYTHON_USE_LIMITED_API=ON`, which requires
 CMake's `Development.SABIModule` component and `USE_SABI 3.11`; both are
 handled in `src/cmake/thirdparty/SetupPython.cmake`.
 
+## MPI add-on wheels
+
+`--mpi ABI=PYTHON` (repeatable) builds one MPI variant of Conduit per MPI
+ABI and packs two add-on wheels:
+
+| wheel              | tag                   | contents |
+|--------------------|-----------------------|----------|
+| `conduit-libs-mpi` | `py3-none-<platform>` | `conduit_libs/mpi/<abi>/lib/libconduit_{relay_mpi,relay_mpi_io,blueprint_mpi}.dylib`, `conduit_libs/lib/cmake/conduit_mpi_<abi>/` (a full Conduit CMake package), the MPI headers |
+| `conduit-mpi`      | same as `conduit`     | `conduit/**/_<abi>/*.so` (the six MPI python modules per ABI) |
+
+Each variant is a Conduit build with `ENABLE_MPI=ON`, `MPI_C_COMPILER`
+from a venv holding the `mpich` or `openmpi` wheel from PyPI, and
+`CONDUIT_INSTALL_MPI_VARIANT=<abi>`, which makes the MPI libraries install
+to `mpi/<abi>/lib` (RPATH `@loader_path`, `@loader_path/../../../lib` for the
+serial libs, HDF5 and zlib), the CMake package to `lib/cmake/conduit_mpi_<abi>`
+(its serial targets point at `lib/`, its MPI targets at `mpi/<abi>/lib`), and
+the MPI python modules to `_<abi>` subpackages. Only those pieces are kept;
+the serial libraries, headers and modules come from the base wheels, which
+the add-ons pin to the exact version. `libmpi` is referenced by soname only
+and never bundled.
+
+At import time `conduit/_mpi_abi.py` loads the MPI modules from the usual
+place (a regular install) or, failing that, from the `_<abi>` subpackage
+matching the MPI library mpi4py has loaded — so MPI programs import
+`mpi4py.MPI` first, as they normally do (`CONDUIT_MPI_ABI` overrides). With
+no mpi4py loaded, `conduit.relay.mpi` raises an `ImportError` that says so,
+and `import conduit` keeps working as before.
+
+C++ consumers of an MPI variant:
+
+```bash
+cmake -DConduit_DIR=<site-packages>/conduit_libs/lib/cmake/conduit_mpi_<abi> \
+      -DMPI_C_COMPILER=<venv>/bin/mpicc -DMPI_CXX_COMPILER=<venv>/bin/mpicxx ...
+find_package(Conduit REQUIRED COMPONENTS MPI)   # conduit::conduit_mpi
+```
+
+`test_mpi.py` (run under `mpiexec -n 2`) exercises `relay.mpi`,
+`blueprint.mpi` and `relay.mpi.io.blueprint` through the add-on.
+
+Verified on macOS arm64 with the `mpich` and `openmpi` wheels: 2-rank python
+round trips through both variants, and a C++ consumer via
+`find_package(Conduit COMPONENTS MPI)` against the openmpi variant (the
+`mpich` 5.0.1 wheel hangs in `MPI_Finalize` for C programs on this Mac).
+
 ## Not done yet
 
 * Linux (`auditwheel`-style handling with `$ORIGIN`) and Windows
   (`delvewheel`, DLL name mangling, `os.add_dll_directory` in `conduit`).
-* MPI variants (`conduit-libs-mpi` / `conduit-mpi`, one build per MPI ABI,
-  selected the way mpi4py does it).
+* A standard-MPI-ABI (`libmpi_abi`) variant.
 * `ConduitConfig.cmake` still records the build-time python executable and
   python module dir; harmless for the wheel but not meaningful.
 * Moving from this script to scikit-build-core + cibuildwheel for CI.

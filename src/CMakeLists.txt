@@ -46,6 +46,23 @@ option(ENABLE_YYJSON      "Use yyjson for JSON Parsing" ON)
 # so the install tree can be moved or packaged (e.g. into a python wheel).
 option(ENABLE_RELOCATABLE_INSTALL "Use relative RPATHs and prefix-relative config" OFF)
 
+# Name of an MPI "variant" install (e.g. mpich, openmpi). When set, the MPI
+# dependent libraries (conduit_relay_mpi, conduit_relay_mpi_io,
+# conduit_blueprint_mpi) install to <prefix>/mpi/<variant>/lib, the CMake
+# package to lib/cmake/conduit_mpi_<variant>, and the MPI python modules to a
+# _<variant> subpackage, so several MPI builds (one per MPI ABI) can coexist
+# with one serial install. Used by the wheel build (scripts/wheels).
+set(CONDUIT_INSTALL_MPI_VARIANT "" CACHE STRING
+    "MPI variant name for side-by-side MPI installs (see scripts/wheels)")
+mark_as_advanced(CONDUIT_INSTALL_MPI_VARIANT)
+if(CONDUIT_INSTALL_MPI_VARIANT)
+    set(CONDUIT_CMAKE_PACKAGE_DIR "conduit_mpi_${CONDUIT_INSTALL_MPI_VARIANT}")
+    set(CONDUIT_MPI_VARIANT_LIB_DIR "mpi/${CONDUIT_INSTALL_MPI_VARIANT}/lib")
+else()
+    set(CONDUIT_CMAKE_PACKAGE_DIR "conduit")
+    set(CONDUIT_MPI_VARIANT_LIB_DIR "")
+endif()
+
 # Add another option that provides extra
 # control over conduit tests for cases where
 # conduit is brought in as a submodule
@@ -156,6 +173,6 @@ add_subdirectory(config)
 # exports for all of our targets
 ################################
 # install exports to comply with standard find_package search path expectations
-install(EXPORT conduit DESTINATION lib/cmake/conduit)
+install(EXPORT conduit DESTINATION lib/cmake/${CONDUIT_CMAKE_PACKAGE_DIR})
 
 

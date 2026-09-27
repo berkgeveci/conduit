@@ -148,7 +148,13 @@ def stage_tpls(hdf5_dir, zlib_dir, libs_pkg):
             shutil.copy2(lib, dst)
 
 
-def configure_build_install(args, src_dir, build_dir, staging, libs_pkg):
+def py_output(python, code):
+    return output([python, "-c", code]).strip()
+
+
+def configure_build_install(args, src_dir, build_dir, staging, libs_pkg,
+                            python=None, extra=()):
+    python = python or args.python
     cmake_args = [
         "cmake", "-S", src_dir, "-B", build_dir, "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
@@ -157,7 +163,7 @@ def configure_build_install(args, src_dir, build_dir, staging, libs_pkg):
         f"-DCMAKE_INSTALL_PREFIX={libs_pkg}",
         f"-DPYTHON_MODULE_INSTALL_PREFIX={staging}",
         "-DENABLE_PYTHON=ON",
-        f"-DPYTHON_EXECUTABLE={args.python}",
+        f"-DPYTHON_EXECUTABLE={python}",
         f"-DCONDUIT_PYTHON_USE_LIMITED_API={'ON' if args.limited_api else 'OFF'}",
         f"-DHDF5_DIR={libs_pkg}",
         f"-DZLIB_DIR={libs_pkg}",
@@ -169,6 +175,7 @@ def configure_build_install(args, src_dir, build_dir, staging, libs_pkg):
         "-DENABLE_MPI=OFF",
         f"-DCMAKE_OSX_DEPLOYMENT_TARGET={args.deployment_target}",
     ]
+    cmake_args += list(extra)   # later -D of the same variable wins
     cmake_args += args.cmake_args
     run(cmake_args)
     run(["cmake", "--build", build_dir, "-j", str(args.jobs)])
@@ -337,6 +344,129 @@ def check_resolution(staging, libs_pkg):
 
 
 ###############################################################################
+# MPI variants
+#
+# One complete Conduit build per MPI ABI (mpich, openmpi), configured against
+# the MPI wheel installed in a venv, with CONDUIT_INSTALL_MPI_VARIANT=<abi>.
+# Only the MPI-dependent pieces are kept:
+#   conduit_libs/mpi/<abi>/lib/libconduit_{relay_mpi,relay_mpi_io,blueprint_mpi}.dylib
+#       (RPATH @loader_path, @loader_path/../../../lib -> serial libs, hdf5, zlib)
+#   conduit_libs/lib/cmake/conduit_mpi_<abi>/   a full Conduit CMake package
+#       whose serial targets point at the main lib/ and MPI targets at mpi/<abi>/lib
+#   conduit_libs/include/conduit/*mpi*          the MPI headers (same for all ABIs)
+#   conduit/**/_<abi>/*.so                      the MPI python modules; picked at
+#       import time by conduit/_mpi_abi.py to match the MPI mpi4py loaded
+# libmpi itself is referenced by soname only and never bundled.
+###############################################################################
+MPI_LIB_PREFIXES = ("libmpi", "libpmpi", "libopen-pal", "libopen-rte", "libpmix")
+
+
+def build_mpi_variant(args, src_dir, build_root, abi, python, mpi_staging):
+    vstaging = build_root / f"staging-mpi-{abi}"
+    if vstaging.exists():
+        shutil.rmtree(vstaging)
+    vstaging.mkdir(parents=True)
+    vlibs = vstaging / "conduit_libs"
+    stage_tpls(args.hdf5_dir.resolve(), args.zlib_dir.resolve(), vlibs)
+    venv = Path(py_output(python, "import sys; print(sys.prefix)"))
+    extra = [
+        "-DENABLE_MPI=ON",
+        f"-DMPI_C_COMPILER={venv / 'bin' / 'mpicc'}",
+        f"-DMPI_CXX_COMPILER={venv / 'bin' / 'mpicxx'}",
+        f"-DCONDUIT_INSTALL_MPI_VARIANT={abi}",
+    ]
+    log(f"MPI variant {abi}: building against {venv}")
+    configure_build_install(args, src_dir, build_root / f"conduit-mpi-{abi}",
+                            vstaging, vlibs, python=python, extra=extra)
+
+    # extract the variant-specific files
+    n = 0
+    dst_libs = mpi_staging / "conduit_libs"
+    for rel in (Path("mpi") / abi, Path("lib") / "cmake" / f"conduit_mpi_{abi}"):
+        src = vlibs / rel
+        if not src.is_dir():
+            raise RuntimeError(f"{abi}: expected {src}")
+        shutil.copytree(src, dst_libs / rel, symlinks=True, dirs_exist_ok=True)
+        n += sum(1 for p in src.rglob("*") if p.is_file())
+    inc = dst_libs / "include" / "conduit"
+    inc.mkdir(parents=True, exist_ok=True)
+    for h in (vlibs / "include" / "conduit").glob("*mpi*"):
+        shutil.copy2(h, inc / h.name)
+        n += 1
+    for d in sorted((vstaging / "conduit").rglob(f"_{abi}")):
+        if d.is_dir():
+            shutil.copytree(d, mpi_staging / "conduit" / d.relative_to(vstaging / "conduit"),
+                            dirs_exist_ok=True)
+            n += sum(1 for p in d.rglob("*") if p.is_file())
+    log(f"MPI variant {abi}: extracted {n} files")
+
+
+def fix_macho_mpi(mpi_staging, main_libs_pkg):
+    """like fix_macho, for the add-on: serial libs live in the main package,
+    libmpi stays unresolved on purpose"""
+    known = {p.name for p in (main_libs_pkg / "lib").glob("*.dylib")}
+    known |= {p.name for p in mpi_staging.rglob("*.dylib")}
+    problems = []
+    files = [p for p in mpi_staging.rglob("*") if is_macho(p)]
+    for f in files:
+        changed = False
+        rel = f.relative_to(mpi_staging)
+        if f.suffix == ".dylib" and macho_id(f) != f"@rpath/{f.name}":
+            run(["install_name_tool", "-id", f"@rpath/{f.name}", f])
+            changed = True
+        for dep in macho_deps(f):
+            if dep.startswith(SYSTEM_LIB_PREFIXES):
+                continue
+            base = os.path.basename(dep)
+            ok = base in known or base.startswith(MPI_LIB_PREFIXES)
+            if dep.startswith(RELATIVE_PREFIXES):
+                if not ok:
+                    problems.append(f"{rel}: unresolved {dep}")
+            elif ok:
+                run(["install_name_tool", "-change", dep, f"@rpath/{base}", f])
+                changed = True
+            else:
+                problems.append(f"{rel}: external dependency {dep}")
+        for rp in macho_rpaths(f):
+            if rp.startswith("/"):
+                run(["install_name_tool", "-delete_rpath", rp, f])
+                changed = True
+        if not macho_rpaths(f):
+            problems.append(f"{rel}: no relative RPATH")
+        if changed:
+            codesign(f)
+    if problems:
+        raise RuntimeError("mach-o fixups (mpi) failed:\n  " + "\n  ".join(problems))
+    log(f"fixed up {len(files)} mach-o files (mpi)")
+
+
+def check_resolution_mpi(mpi_staging, main_staging):
+    """every @rpath dep (except libmpi) must resolve via the file's RPATHs,
+    against either the add-on staging or the main staging"""
+    problems = []
+    for f in (p for p in mpi_staging.rglob("*") if is_macho(p)):
+        rpaths = [rp for rp in macho_rpaths(f) if rp.startswith("@loader_path")]
+        for dep in macho_deps(f):
+            if not dep.startswith("@rpath/"):
+                continue
+            name = dep[len("@rpath/"):]
+            if name.startswith(MPI_LIB_PREFIXES):
+                continue
+            found = False
+            for rp in rpaths:
+                sub = rp[len("@loader_path"):].lstrip("/")
+                for root in (mpi_staging, main_staging):
+                    base = root / f.parent.relative_to(mpi_staging)
+                    if Path(os.path.normpath(base / sub / name)).exists():
+                        found = True
+            if not found:
+                problems.append(f"{f.relative_to(mpi_staging)}: {dep} (rpaths: {rpaths})")
+    if problems:
+        raise RuntimeError("unresolved @rpath deps (mpi):\n  " + "\n  ".join(problems))
+    log("all @rpath dependencies of the mpi add-on resolve (libmpi left to mpi4py)")
+
+
+###############################################################################
 # wheel packing
 ###############################################################################
 def urlsafe_b64(digest):
@@ -451,6 +581,12 @@ def main():
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--skip-build", action="store_true",
                     help="reuse existing staging (only repack wheels)")
+    ap.add_argument("--skip-mpi-build", action="store_true",
+                    help="reuse the existing MPI add-on staging (only repack)")
+    ap.add_argument("--mpi", action="append", default=[], metavar="ABI=PYTHON",
+                    help="also build an MPI variant: ABI name (mpich, openmpi) and a "
+                         "python whose venv has the matching MPI wheel, numpy and pip; "
+                         "produces the conduit-libs-mpi and conduit-mpi add-on wheels")
     ap.add_argument("cmake_args", nargs="*",
                     help="extra -D args passed to cmake")
     args = ap.parse_args()
@@ -497,9 +633,38 @@ def main():
          "Requires-Dist: numpy"],
         license_file)
 
+    wheels = [libs_whl, py_whl]
+
+    # MPI add-on wheels ---------------------------------------------------
+    if args.mpi:
+        mpi_staging = build_root / "staging-mpi"
+        if not args.skip_mpi_build:
+            if mpi_staging.exists():
+                shutil.rmtree(mpi_staging)
+            mpi_staging.mkdir()
+            for spec in args.mpi:
+                abi, python = spec.split("=", 1)
+                build_mpi_variant(args, src_dir, build_root, abi, python, mpi_staging)
+            fix_macho_mpi(mpi_staging, libs_pkg)
+        check_resolution_mpi(mpi_staging, staging)
+        wheels.append(write_wheel(
+            dist_dir, "conduit-libs-mpi", version, f"py3-none-{plat}",
+            [(mpi_staging / "conduit_libs", "conduit_libs")],
+            [f"Requires-Dist: conduit-libs=={version}",
+             "Description: MPI builds of the Conduit relay/blueprint MPI libraries, "
+             "one per MPI ABI, for the conduit-libs wheel."],
+            license_file))
+        wheels.append(write_wheel(
+            dist_dir, "conduit-mpi", version, f"{py_tag}-{abi_tag}-{plat}",
+            [(mpi_staging / "conduit", "conduit")],
+            [f"Requires-Dist: conduit=={version}",
+             f"Requires-Dist: conduit-libs-mpi=={version}",
+             "Requires-Dist: mpi4py>=4.0"],
+            license_file))
+
     log("done:")
-    log(f"  {libs_whl}")
-    log(f"  {py_whl}")
+    for w in wheels:
+        log(f"  {w}")
 
 
 if __name__ == "__main__":

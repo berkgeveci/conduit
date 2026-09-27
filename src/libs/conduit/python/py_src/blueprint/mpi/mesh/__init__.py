@@ -6,10 +6,8 @@
 # file: __init__.py
 # Purpose: Main init for the conduit blueprint mpi mesh module.
 ###############################################################################
-from .conduit_blueprint_mpi_mesh_python import *
+from conduit._mpi_abi import import_ext as _import_ext
+
+globals().update(_import_ext(__name__, "conduit_blueprint_mpi_mesh_python"))
 
 from . import examples
-
-
-
-

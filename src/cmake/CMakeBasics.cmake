@@ -309,12 +309,29 @@ macro(add_compiled_library)
             endif()
         endif()
         # install our lib
-        if(NOT "${args_LIB_DEST}" STREQUAL "")
+        set(lib_dest_dir "${args_LIB_DEST_DIR}")
+        # MPI variant installs: the MPI dependent libs go to
+        # <prefix>/mpi/<variant>/lib and find the serial libs (and bundled
+        # tpls) in <prefix>/lib via a relative RPATH
+        if("${lib_dest_dir}" STREQUAL "" AND CONDUIT_MPI_VARIANT_LIB_DIR
+           AND "${args_NAME}" MATCHES "_mpi")
+            set(lib_dest_dir "${CONDUIT_MPI_VARIANT_LIB_DIR}")
+            if(ENABLE_RELOCATABLE_INSTALL)
+                if(APPLE)
+                    set(mpi_variant_rpath "@loader_path;@loader_path/../../../lib")
+                else()
+                    set(mpi_variant_rpath "$ORIGIN;$ORIGIN/../../../lib")
+                endif()
+                set_target_properties(${args_NAME} PROPERTIES
+                                      INSTALL_RPATH "${mpi_variant_rpath}")
+            endif()
+        endif()
+        if(NOT "${lib_dest_dir}" STREQUAL "")
             install(TARGETS ${args_NAME}
                     EXPORT ${args_EXPORT}
-                    LIBRARY DESTINATION ${args_LIB_DEST_DIR}
-                    ARCHIVE DESTINATION ${args_LIB_DEST_DIR}
-                    RUNTIME DESTINATION ${args_LIB_DEST_DIR})
+                    LIBRARY DESTINATION ${lib_dest_dir}
+                    ARCHIVE DESTINATION ${lib_dest_dir}
+                    RUNTIME DESTINATION ${lib_dest_dir})
         else()
             install(TARGETS ${args_NAME}
                     EXPORT ${args_EXPORT}
