@@ -63,6 +63,28 @@ write_basic_package_version_file(
 )
 
 
+###############################################################################
+# relocatable installs: third-party install dirs that live inside our
+# install prefix (i.e. bundled TPLs) are recorded relative to the prefix.
+# ConduitConfig.cmake expands ${_IMPORT_ROOT} to the actual install root.
+###############################################################################
+if(ENABLE_RELOCATABLE_INSTALL)
+    get_filename_component(_conduit_prefix_real "${CMAKE_INSTALL_PREFIX}" REALPATH)
+    string(LENGTH "${_conduit_prefix_real}" _conduit_prefix_len)
+    foreach(_var CONDUIT_INSTALL_PREFIX HDF5_DIR ZLIB_DIR)
+        if(${_var})
+            get_filename_component(_var_real "${${_var}}" REALPATH)
+            string(FIND "${_var_real}" "${_conduit_prefix_real}" _pos)
+            if(_pos EQUAL 0)
+                string(SUBSTRING "${_var_real}" ${_conduit_prefix_len} -1 _rest)
+                # shadow the cache var for configure_file below
+                set(${_var} "\${_IMPORT_ROOT}${_rest}")
+                message(STATUS "Relocatable config: ${_var} = ${${_var}}")
+            endif()
+        endif()
+    endforeach()
+endif()
+
 # setup cmake package config file
 configure_package_config_file(
   ConduitConfig.cmake.in

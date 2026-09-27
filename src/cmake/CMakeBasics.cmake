@@ -78,6 +78,28 @@ if(NOT BUILD_SHARED_LIBS)
     endif()
 endif()
 
+################################
+# Relocatable install RPath Settings
+################################
+# Override the absolute install RPATH (set above, or by BLT when
+# BUILD_SHARED_LIBS is ON) with loader-relative entries. Libraries live in
+# <prefix>/lib and executables in <prefix>/bin, so "<loader dir>" and
+# "<loader dir>/../lib" cover both. Nothing outside the install prefix
+# (e.g. TPL install dirs) is added to the RPATH.
+if(ENABLE_RELOCATABLE_INSTALL)
+    if(APPLE)
+        set(CMAKE_MACOSX_RPATH ON)
+        set(CMAKE_INSTALL_NAME_DIR "@rpath")
+        set(CMAKE_INSTALL_RPATH "@loader_path;@loader_path/../lib")
+    else()
+        set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib")
+    endif()
+    set(CMAKE_SKIP_BUILD_RPATH FALSE)
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
+    message(STATUS "Relocatable install enabled (ENABLE_RELOCATABLE_INSTALL = ON)")
+endif()
+
 if( BLT_CXX_STD STREQUAL "c++98" )
     message(FATAL_ERROR "Conduit requires C++14 support."
                         "\nPlease set BLT_CXX_STD to c++14 or newer.")

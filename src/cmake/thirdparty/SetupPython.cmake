@@ -27,9 +27,17 @@ if(Python3_EXECUTABLE)
     message(STATUS "Python Executable: {Python3_EXECUTABLE}")
 endif()
 
+# Building against the stable ABI (CONDUIT_PYTHON_USE_LIMITED_API) needs the
+# Development.SABIModule component, which "Development" does not include.
+set(conduit_python_extra_components)
+if(CONDUIT_PYTHON_USE_LIMITED_API)
+    set(conduit_python_extra_components Development.SABIModule)
+endif()
+
 find_package(Python3
              REQUIRED
-             COMPONENTS Interpreter Development NumPy)
+             COMPONENTS Interpreter Development NumPy
+                        ${conduit_python_extra_components})
 
 # normalize python found to all caps
 if(Python3_FOUND)
@@ -242,7 +250,10 @@ FUNCTION(PYTHON_ADD_COMPILED_MODULE)
     MESSAGE(STATUS "Configuring python module: ${args_NAME}")
     set(sabi)
     if (CONDUIT_PYTHON_USE_LIMITED_API)
-        set(sabi USE_SABI 3.8)
+        # the extension sources use PyType_FromModuleAndSpec, PyModule_AddType
+        # and PyType_GetModuleState, which joined the limited API in 3.10;
+        # the option itself is gated on Python >= 3.11 (see libs/CMakeLists.txt)
+        set(sabi USE_SABI 3.11)
     endif ()
     Python3_add_library(${args_NAME} MODULE ${sabi} WITH_SOABI ${args_SOURCES})
 
@@ -285,8 +296,39 @@ FUNCTION(PYTHON_ADD_COMPILED_MODULE)
         set(py_install_dir ${PYTHON_MODULE_INSTALL_PREFIX})
     endif()
 
+    # relocatable installs: point the module's RPATH at <prefix>/lib
+    # relative to where the module is installed, so the modules keep
+    # working when the install tree (or the python package) is moved.
+    if(ENABLE_RELOCATABLE_INSTALL)
+        set(py_mod_abs_dir "${py_install_dir}/${args_PY_MODULE_DIR}")
+        if(NOT IS_ABSOLUTE "${py_mod_abs_dir}")
+            set(py_mod_abs_dir "${CMAKE_INSTALL_PREFIX}/${py_mod_abs_dir}")
+        endif()
+        file(RELATIVE_PATH py_mod_lib_rel
+             "${py_mod_abs_dir}" "${CMAKE_INSTALL_PREFIX}/lib")
+        if(APPLE)
+            set(py_mod_rpath "@loader_path/${py_mod_lib_rel}")
+        else()
+            set(py_mod_rpath "$ORIGIN/${py_mod_lib_rel}")
+        endif()
+        set_target_properties(${args_NAME} PROPERTIES
+                              INSTALL_RPATH "${py_mod_rpath}"
+                              INSTALL_RPATH_USE_LINK_PATH FALSE)
+    endif()
+
+    # python modules are part of the "conduit" export set so that their
+    # install locations show up in the installed cmake config. When they
+    # are installed outside of the install prefix (PYTHON_MODULE_INSTALL_PREFIX)
+    # the export would record absolute paths, which breaks a relocatable
+    # install (importing the config fails when those paths don't exist),
+    # so skip exporting them in that case.
+    set(py_mod_export EXPORT conduit)
+    if(ENABLE_RELOCATABLE_INSTALL AND PYTHON_MODULE_INSTALL_PREFIX)
+        set(py_mod_export)
+    endif()
+
     install(TARGETS ${args_NAME}
-            EXPORT  conduit
+            ${py_mod_export}
             LIBRARY DESTINATION ${py_install_dir}/${args_PY_MODULE_DIR}
             ARCHIVE DESTINATION ${py_install_dir}/${args_PY_MODULE_DIR}
             RUNTIME DESTINATION ${py_install_dir}/${args_PY_MODULE_DIR}

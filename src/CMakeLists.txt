@@ -40,6 +40,12 @@ option(ENABLE_HIP         "Build HIP Support"           OFF)
 
 option(ENABLE_YYJSON      "Use yyjson for JSON Parsing" ON)
 
+# When ON, installed libraries, executables, and python modules use
+# relative RPATHs (@loader_path / $ORIGIN) and the installed CMake config
+# refers to bundled third-party libraries relative to the install prefix,
+# so the install tree can be moved or packaged (e.g. into a python wheel).
+option(ENABLE_RELOCATABLE_INSTALL "Use relative RPATHs and prefix-relative config" OFF)
+
 # Add another option that provides extra
 # control over conduit tests for cases where
 # conduit is brought in as a submodule
