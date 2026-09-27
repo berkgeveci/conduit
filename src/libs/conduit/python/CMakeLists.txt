@@ -77,6 +77,9 @@ if(PYTHON_MODULE_INSTALL_PREFIX)
 else()
     install(FILES ${conduit_py_headers} DESTINATION python-modules/conduit/)
 endif()
+# also install it with the regular headers, so projects that build against
+# a conduit install (or the conduit-libs wheel) can find it via the include dir
+install(FILES ${conduit_py_headers} DESTINATION include/conduit/)
 
 
 # create scripts that make it easy to launch the proper 
